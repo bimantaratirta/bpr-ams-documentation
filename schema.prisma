@@ -1,0 +1,302 @@
+// ============================================================================
+// BPR Sahabat Sejati - Sistem Kehadiran Karyawan
+// Prisma Schema v3.0
+// ============================================================================
+
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+/// Peran admin dashboard
+enum AdminRole {
+    SUPER_ADMIN // Akses penuh ke semua fitur
+    ADMIN // Akses kelola karyawan & absensi
+    VIEWER // Hanya lihat data (read-only)
+}
+
+/// Status akun admin
+enum AdminStatus {
+    ACTIVE
+    INACTIVE
+}
+
+/// Status kehadiran karyawan
+enum AttendanceStatus {
+    HADIR // Check-in ≤ 08:00
+    TERLAMBAT // Check-in > 08:00
+    IZIN_CUTI // Cuti tahunan / pribadi
+    IZIN_SAKIT // Sakit dengan surat keterangan
+    IZIN_SETENGAH_HARI // Izin setengah hari kerja
+    ALPHA // Tanpa keterangan
+}
+
+/// Tipe izin / cuti
+enum LeaveType {
+    IZIN_CUTI
+    IZIN_SAKIT
+    IZIN_SETENGAH_HARI
+}
+
+/// Status permohonan izin
+enum LeaveStatus {
+    PENDING // Menunggu persetujuan
+    APPROVED // Disetujui
+    REJECTED // Ditolak
+}
+
+/// Tipe notifikasi
+enum NotificationType {
+    LEAVE_REQUEST // Permohonan izin baru
+    LEAVE_APPROVED // Izin disetujui
+    LEAVE_REJECTED // Izin ditolak
+    DEVICE_RESET // Device ID direset
+    ANNOUNCEMENT // Pengumuman umum
+    POINT_MILESTONE // Pencapaian poin
+}
+
+// ============================================================================
+// MODELS
+// ============================================================================
+
+/// Kantor cabang / kantor pusat
+model Branch {
+    id        String  @id @default(cuid())
+    name      String  @unique // "Kantor Pusat", "Cabang Sudirman", dll.
+    address   String // Alamat lengkap
+    latitude  Float // Koordinat GPS latitude
+    longitude Float // Koordinat GPS longitude
+    radius    Int     @default(50) // Radius geofencing dalam meter
+    isActive  Boolean @default(true)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Relations
+    employees   Employee[]
+    attendances Attendance[]
+
+    @@map("branches")
+}
+
+/// Data karyawan
+model Employee {
+    id       String  @id @default(cuid())
+    nik      String  @unique // Nomor Induk Karyawan (e.g. "2023007")
+    name     String // Nama lengkap
+    email    String  @unique // Email korporat (e.g. "ahmad.fauzi@bpr.co.id")
+    password String // Hashed password
+    phone    String? // Nomor telepon
+    role     String // Jabatan (e.g. "Teller", "IT Support", "HR Manager")
+    avatar   String? // URL foto profil (S3)
+
+    // Device Binding
+    deviceId    String? @unique // Unique device identifier untuk binding
+    deviceModel String? // Model perangkat (e.g. "Samsung Galaxy A54")
+    deviceOs    String? // OS perangkat (e.g. "Android 14")
+
+    branchId String // Cabang penempatan
+    isActive Boolean @default(true)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Relations
+    branch        Branch         @relation(fields: [branchId], references: [id])
+    attendances   Attendance[]
+    leaveRequests LeaveRequest[]
+    pointRecords  PointRecord[]
+    notifications Notification[]
+
+    @@index([branchId])
+    @@index([nik])
+    @@map("employees")
+}
+
+/// Admin dashboard
+model Admin {
+    id       String      @id @default(cuid())
+    name     String
+    email    String      @unique
+    password String // Hashed password
+    role     AdminRole   @default(ADMIN)
+    status   AdminStatus @default(ACTIVE)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Relations
+    leaveActions LeaveRequest[] @relation("ApprovedBy")
+
+    @@map("admins")
+}
+
+/// Rekaman absensi harian
+model Attendance {
+    id   String   @id @default(cuid())
+    date DateTime @db.Date // Tanggal absensi (YYYY-MM-DD)
+
+    // Check-in details
+    checkInTime         DateTime? // Waktu check-in lengkap
+    checkInLat          Float? // Latitude saat check-in
+    checkInLng          Float? // Longitude saat check-in
+    checkInPhoto        String? // URL selfie check-in (S3)
+    checkInInsideRadius Boolean   @default(false) // Apakah dalam radius geofence
+
+    // Check-out details
+    checkOutTime DateTime? // Waktu check-out lengkap
+    checkOutLat  Float? // Latitude saat check-out
+    checkOutLng  Float? // Longitude saat check-out
+
+    // Computed / derived fields
+    status          AttendanceStatus // Status kehadiran
+    durationMinutes Int? // Total durasi kerja dalam menit
+
+    // Poin kehadiran
+    // Rules:
+    //   - Check-in ≤ 08:00     → 1 poin (Hadir)
+    //   - Check-in 08:01-08:30 → 0.5 poin (Terlambat)
+    //   - Check-in > 08:30     → 0 poin (Terlambat)
+    //   - Izin / Cuti          → 0 poin
+    points Float @default(0)
+
+    employeeId String
+    branchId   String
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Relations
+    employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+    branch   Branch   @relation(fields: [branchId], references: [id])
+
+    @@unique([employeeId, date]) // 1 record per karyawan per hari
+    @@index([employeeId])
+    @@index([branchId])
+    @@index([date])
+    @@index([status])
+    @@map("attendances")
+}
+
+/// Permohonan izin / cuti
+model LeaveRequest {
+    id         String      @id @default(cuid())
+    type       LeaveType // Tipe izin
+    startDate  DateTime    @db.Date // Tanggal mulai izin
+    endDate    DateTime    @db.Date // Tanggal selesai izin
+    reason     String // Alasan izin
+    attachment String? // URL lampiran dokumen (S3)
+    status     LeaveStatus @default(PENDING)
+
+    // Approval info
+    approvedById String? // Admin yang approve/reject
+    approvedAt   DateTime? // Waktu approval
+    rejectReason String? // Alasan penolakan (jika ditolak)
+
+    employeeId String
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Relations
+    employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+    approvedBy Admin?   @relation("ApprovedBy", fields: [approvedById], references: [id])
+
+    @@index([employeeId])
+    @@index([status])
+    @@index([startDate, endDate])
+    @@map("leave_requests")
+}
+
+/// Rekaman poin kehadiran (detail/log)
+model PointRecord {
+    id          String   @id @default(cuid())
+    date        DateTime @db.Date // Tanggal
+    points      Float // Jumlah poin (1, 0.5, atau 0)
+    label       String // Label deskriptif (e.g. "Absensi Tepat Waktu")
+    checkInTime String? // Waktu check-in (e.g. "07:55")
+    type        String // tepat | setengah | alpha
+
+    employeeId String
+
+    createdAt DateTime @default(now())
+
+    // Relations
+    employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+    @@unique([employeeId, date])
+    @@index([employeeId])
+    @@index([date])
+    @@map("point_records")
+}
+
+/// Notifikasi ke karyawan atau admin
+model Notification {
+    id      String           @id @default(cuid())
+    type    NotificationType
+    title   String // Judul notifikasi
+    message String // Isi notifikasi
+    isRead  Boolean          @default(false)
+    data    Json? // Data tambahan (e.g. leaveRequestId)
+
+    employeeId String? // Target karyawan (null jika broadcast)
+
+    createdAt DateTime @default(now())
+
+    // Relations
+    employee Employee? @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+    @@index([employeeId])
+    @@index([isRead])
+    @@index([createdAt])
+    @@map("notifications")
+}
+
+/// Pengaturan aplikasi (global settings)
+model AppSettings {
+    id String @id @default("default")
+
+    // Pengaturan Absensi
+    defaultCheckIn String @default("08:00") // Batas waktu hadir (≤ = 1 poin)
+    halfPointEnd   String @default("08:30") // Batas setengah poin (08:01 - ini = 0.5 poin)
+    defaultRadius  Int    @default(50) // Radius geofencing default (meter)
+
+    // Pengaturan Umum
+    companyName String  @default("BPR Sahabat Sejati")
+    companyLogo String? // URL logo (S3)
+    timezone    String  @default("Asia/Jakarta")
+
+    // S3 / Storage Configuration
+    s3Endpoint String? // S3 endpoint URL
+    s3Bucket   String? // Nama bucket
+
+    updatedAt DateTime @updatedAt
+
+    @@map("app_settings")
+}
+
+/// Audit log untuk melacak perubahan penting
+model AuditLog {
+    id          String  @id @default(cuid())
+    action      String // e.g. "EMPLOYEE_CREATED", "LEAVE_APPROVED"
+    entity      String // e.g. "Employee", "LeaveRequest"
+    entityId    String // ID entitas terkait
+    performedBy String // Admin ID atau "system"
+    details     Json? // Detail perubahan
+    ipAddress   String? // IP address
+
+    createdAt DateTime @default(now())
+
+    @@index([entity, entityId])
+    @@index([performedBy])
+    @@index([createdAt])
+    @@map("audit_logs")
+}
