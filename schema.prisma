@@ -226,7 +226,7 @@ model PointRecord {
     points      Float // Jumlah poin (1, 0.5, atau 0)
     label       String // Label deskriptif (e.g. "Absensi Tepat Waktu")
     checkInTime String? // Waktu check-in (e.g. "07:55")
-    type        String // tepat | setengah | alpha
+    type        String // tepat | setengah | terlambat | alpha
 
     employeeId String
 

@@ -1270,7 +1270,7 @@ GET /points/me?month=2&year=2026
         "type": "tepat"
       },
       {
-        "label": "Tidak Hadir",
+        "label": "Alpha — Tanpa Keterangan",
         "date": "2026-02-06",
         "time": null,
         "points": 0,
@@ -1281,7 +1281,7 @@ GET /points/me?month=2&year=2026
         "date": "2026-02-05",
         "time": "08:45",
         "points": 0,
-        "type": "alpha"
+        "type": "terlambat"
       }
     ],
     "rules": {
